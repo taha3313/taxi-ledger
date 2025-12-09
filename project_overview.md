@@ -1,6 +1,6 @@
 # Project Overview: TaxiLedger dApp
 
-This document provides an overview of the TaxiLedger decentralized application, including its purpose, architecture, and the full source code for its core components.
+This document provides an overview of the TaxiLedger decentralized application, including its purpose, architecture, a step-by-step user guide, and the full source code for its core components.
 
 ## 1. Project Idea
 
@@ -14,7 +14,72 @@ The system has three main user roles:
 
 This approach ensures that all trip records are tamper-proof and publicly verifiable, bringing trust and transparency to the taxi industry.
 
-## 2. Implementation
+## 2. How to Use the dApp
+
+Follow these steps to set up and run the application locally.
+
+### Step 1: Start the Local Blockchain
+
+Open a terminal and run the following command from the project's root directory. This will start a local Hardhat blockchain node that simulates an Ethereum network. It will also generate a list of test accounts with pre-funded Ether.
+
+```sh
+npx hardhat node
+```
+Leave this terminal running.
+
+### Step 2: Deploy the Smart Contract
+
+Open a **second** terminal and run the following command. This deploys the `TaxiLedger` smart contract to the local blockchain you just started.
+
+```sh
+npx hardhat run scripts/deploy.js --network localhost
+```
+After running, the script will output the deployed contract's address. It should look like this: `TaxiLedger deployed at: 0x5FbDB2315678afecb367f032d93F642f64180aa3`.
+
+### Step 3: Configure the Frontend
+
+The frontend needs to know the address of the deployed contract.
+
+1.  Navigate to the `taxi-frontend` directory.
+2.  Create a new file named `.env`.
+3.  Add the following line to the `.env` file, replacing the example address with the one you received in Step 2:
+
+    ```
+    VITE_CONTRACT_ADDRESS=0x5FbDB2315678afecb367f032d93F642f64180aa3
+    ```
+
+### Step 4: Run the Frontend
+
+In a **third** terminal, navigate to the `taxi-frontend` directory and run the following commands to install dependencies and start the application:
+
+```sh
+# If you haven't installed dependencies yet
+npm install
+
+# Start the frontend development server
+npm run dev
+```
+You can now open the application in your web browser at the local address provided (usually `http://localhost:5173`).
+
+### Step 5: Using the Application
+
+1.  **Register a Driver:**
+    *   Go to the **Owner Panel**. The application is already acting as the contract owner (the first account from the Hardhat node).
+    *   Copy one of the other Hardhat account addresses (e.g., the second one, `0x709...`).
+    *   Paste this address into the "Driver address" input field and click "Register Driver". You should see a success message.
+
+2.  **Record a Trip:**
+    *   Go to the **Driver Panel**.
+    *   From the "Select Driver Account" dropdown, choose the address you just registered as a driver. This is crucial, as only registered drivers can record trips.
+    *   Fill in the "Distance (meters)" and "Duration (seconds)" fields.
+    *   Click "Record Trip". You should see a success message with the new Trip ID.
+
+3.  **View a Trip:**
+    *   Go to the **Passenger Panel**.
+    *   Enter the Trip ID you received in the previous step (e.g., `1`).
+    *   Click "View Trip". The immutable details of the trip will be displayed.
+
+## 3. Implementation Details
 
 The project is split into two main parts: a Solidity-based backend (the smart contract) and a React-based frontend for user interaction.
 
@@ -35,13 +100,13 @@ The project is split into two main parts: a Solidity-based backend (the smart co
 *   **Blockchain Interaction:** It uses the `ethers.js` library to connect to the local Hardhat blockchain node. It interacts with the deployed `TaxiLedger` smart contract by using its address and ABI (Application Binary Interface).
 *   **User Interface (`App.jsx`):**
     *   The UI is divided into three tabs, one for each user role (Owner, Driver, Passenger).
-    *   **Owner Panel:** Allows the contract owner to enter a driver's Ethereum address and register them.
-    *   **Driver Panel:** Provides a form for a registered driver to input trip details (distance, duration) and record the trip.
-    *   **Passenger Panel:** Allows any user to enter a Trip ID and view the complete, immutable details of that trip, including a QR code representation of the data.
+    *   **Owner Panel:** Allows the contract owner (defaulted to Hardhat account 0) to register a new driver.
+    *   **Driver Panel:** Provides a dropdown to select a driver account from the list of available Hardhat accounts. Once a registered driver account is selected, that user can input trip details and record the trip.
+    *   **Passenger Panel:** Allows any user to enter a Trip ID and view the complete, immutable details of that trip.
 
 ---
 
-## 3. Source Code
+## 4. Source Code
 
 ### `contracts/TaxiLedger.sol`
 
@@ -160,7 +225,6 @@ contract TaxiLedger is Ownable {
 ```jsx
 import { useState, useEffect } from "react";
 import { ethers } from "ethers";
-import * as QRCode from "qrcode.react";
 import taxiAbi from "./abi/TaxiLedger.json";
 
 const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS;
@@ -169,8 +233,13 @@ export default function App() {
   const [provider, setProvider] = useState(null);
   const [signer, setSigner] = useState(null);
   const [contract, setContract] = useState(null);
+  const [initError, setInitError] = useState(null);
 
   const [currentTab, setCurrentTab] = useState("owner"); // owner | driver | passenger
+
+  const [hardhatAccounts, setHardhatAccounts] = useState([]);
+  const [driverAccount, setDriverAccount] = useState("");
+  const [driverSigner, setDriverSigner] = useState(null);
 
   // Owner panel
   const [driverAddress, setDriverAddress] = useState("");
@@ -191,14 +260,34 @@ export default function App() {
     const init = async () => {
       try {
         const prov = new ethers.providers.JsonRpcProvider("http://127.0.0.1:8545");
-        const sign = prov.getSigner(0); // default Hardhat signer
-        const cont = new ethers.Contract(CONTRACT_ADDRESS, taxiAbi, sign);
+        const ownerSigner = prov.getSigner(0); // default Hardhat signer
+        const cont = new ethers.Contract(CONTRACT_ADDRESS, taxiAbi.abi, ownerSigner);
 
         setProvider(prov);
-        setSigner(sign);
+        setSigner(ownerSigner);
         setContract(cont);
+
+        const signers = await prov.listAccounts();
+        const accountsWithSigners = await Promise.all(
+          signers.map(async (address, index) => ({
+            address: address,
+            signer: prov.getSigner(index)
+          }))
+        );
+        setHardhatAccounts(accountsWithSigners);
+
+        // Set default driver account to the second one (index 1), assuming first is owner
+        if (accountsWithSigners.length > 1) {
+          setDriverAccount(accountsWithSigners[1].address);
+          setDriverSigner(accountsWithSigners[1].signer);
+        }
+
       } catch (err) {
         console.error(err);
+        setInitError(
+          "Failed to connect to the blockchain. Please ensure the Hardhat node is running and the contract address in taxi-frontend/.env is correct. Error: " +
+            err.message
+        );
       }
     };
     init();
@@ -219,8 +308,14 @@ export default function App() {
   // DRIVER: Record trip
   async function recordTrip() {
     try {
+      if (!driverSigner) {
+        setDriverStatus("Error: No driver account selected.");
+        return;
+      }
+      const driverContract = new ethers.Contract(CONTRACT_ADDRESS, taxiAbi.abi, driverSigner);
+
       const hashBytes = ethers.utils.formatBytes32String(dataHash);
-      const tx = await contract.recordTrip(
+      const tx = await driverContract.recordTrip(
         parseInt(distance),
         parseInt(duration),
         hashBytes
@@ -256,6 +351,14 @@ export default function App() {
 
   return (
     <div className="p-8 font-sans">
+      {initError && (
+        <div
+          className="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg"
+          role="alert"
+        >
+          <span className="font-bold">Initialization Error:</span> {initError}
+        </div>
+      )}
       <h1 className="text-3xl font-bold mb-6">TaxiLedger DApp</h1>
 
       {/* Navigation */}
@@ -300,6 +403,28 @@ export default function App() {
       {currentTab === "driver" && (
         <div className="p-6 border rounded-lg shadow-md bg-gray-50">
           <h2 className="text-2xl font-semibold mb-4">🚖 Driver Panel</h2>
+
+          <label htmlFor="driver-select" className="block text-sm font-medium text-gray-700 mb-2">Select Driver Account:</label>
+          <select
+            id="driver-select"
+            value={driverAccount}
+            onChange={(e) => {
+              const selectedAddress = e.target.value;
+              const selectedAccount = hardhatAccounts.find(acc => acc.address === selectedAddress);
+              if (selectedAccount) {
+                setDriverAccount(selectedAddress);
+                setDriverSigner(selectedAccount.signer);
+              }
+            }}
+            className="w-full p-2 border border-gray-300 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-green-500"
+          >
+            {hardhatAccounts.map((acc, index) => (
+              <option key={acc.address} value={acc.address}>
+                {acc.address} {index === 0 ? "(Owner)" : `(Account ${index})`}
+              </option>
+            ))}
+          </select>
+
           <input
             type="number"
             placeholder="Distance (meters)"
@@ -345,15 +470,7 @@ export default function App() {
               <h3 className="text-xl font-medium mb-2">Trip Details</h3>
               <pre className="bg-gray-100 p-3 rounded-md border border-gray-200 overflow-auto">{JSON.stringify(tripData, null, 2)}</pre>
 
-              <h3 className="text-xl font-medium mt-4 mb-2">QR Code</h3>
-              <QRCode.default
-                value={JSON.stringify(tripData)}
-                size={180}
-                fgColor="#000000"
-                bgColor="#ffffff"
-                level="M"
-                className="p-2 border border-gray-300 rounded-md"
-              />
+
             </div>
           )}
         </div>
